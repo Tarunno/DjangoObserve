@@ -1,0 +1,30 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "job", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: critical
+      continue: true
+
+receivers:
+  - name: default
+    # Logs to Alertmanager UI by default. Add email/webhook as needed.
+  - name: critical
+    # Optional Slack. Set ALERTMANAGER_SLACK_WEBHOOK_URL in .env and
+    # swap this file for alertmanager.slack.yml, or configure webhook below.
+    # webhook_configs:
+    #   - url: "http://example.invalid/hooks/alertmanager"
+
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: ["alertname", "job"]

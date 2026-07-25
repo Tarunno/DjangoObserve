@@ -1,47 +1,163 @@
-version: '3.6'
+# Production-oriented monitoring stack for Django + PostgreSQL + Celery.
+# Usage:
+#   cp .env.example .env   # then edit secrets / targets
+#   docker-compose -f docker-compose.monitoring.yml up -d
+
+version: "3.8"
+
 services:
   postgres_exporter:
-    image: prometheuscommunity/postgres-exporter:latest
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
     environment:
-      DATA_SOURCE_NAME: "postgresql://postgres:password@host:5432/database?sslmode=disable"
-    ports:
-      - "9187:9187"  
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATA_SOURCE_NAME}
+    networks:
+      - monitoring
+    expose:
+      - "9187"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   flower:
-    image: mher/flower:0.9.7
-    command: >
-      --broker=redis://:password@host:6379/1
-      --address=0.0.0.0
-      --port=5555
-      --enable-prometheus
-    ports:
-      - "5555:5555"
-
-  celery-exporter:
-    image: danihodovic/celery-exporter:latest
-    command: --broker-url=redis://:password@host:6379/1
-    ports:
-      - "9808:9808"
-    depends_on:
+    image: mher/flower:2.0.1
+    restart: unless-stopped
+    command:
+      - celery
       - flower
+      - --broker=${CELERY_BROKER_URL}
+      - --address=0.0.0.0
+      - --port=5555
+      - --basic-auth=${FLOWER_BASIC_AUTH}
     environment:
-      - CELERY_BROKER_URL=redis://:password@host:6379/1
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+    networks:
+      - monitoring
+    # Not published by default. Uncomment to access UI on localhost only:
+    # ports:
+    #   - "127.0.0.1:5555:5555"
+    expose:
+      - "5555"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  celery_exporter:
+    image: danihodovic/celery-exporter:0.10.7
+    restart: unless-stopped
+    command:
+      - --broker-url=${CELERY_BROKER_URL}
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+    networks:
+      - monitoring
+    expose:
+      - "9808"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   prometheus:
-    image: prom/prometheus:v2.31.0
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    user: "65534:65534"
+    entrypoint: ["/bin/sh", "/etc/prometheus/entrypoint.sh"]
+    environment:
+      DJANGO_METRICS_TARGET: ${DJANGO_METRICS_TARGET:-host.docker.internal:8000}
+      DJANGO_METRICS_PATH: ${DJANGO_METRICS_PATH:-/metrics}
+      DJANGO_APP_LABEL: ${DJANGO_APP_LABEL:-django}
+      PROMETHEUS_RETENTION: ${PROMETHEUS_RETENTION:-15d}
+      PROMETHEUS_RETENTION_SIZE: ${PROMETHEUS_RETENTION_SIZE:-10GB}
+      PROMETHEUS_EXTERNAL_URL: ${PROMETHEUS_EXTERNAL_URL:-http://localhost:9090}
     volumes:
-      - ./prometheus/:/etc/prometheus/
-      - ./prometheus_data:/prometheus  
+      - ./prometheus/entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
+      - ./prometheus/prometheus.yml.template:/etc/prometheus/prometheus.yml.template:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-127.0.0.1:9090}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres_exporter
+      - celery_exporter
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'  
-    network_mode: host
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - monitoring
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-127.0.0.1:9093}:9093"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   grafana:
-    image: grafana/grafana:8.5.5
-    network_mode: host
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_USER: mahadi
-      GF_SECURITY_ADMIN_PASSWORD: mahadi123
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-http://localhost:3000}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     volumes:
-      - ./grafana_data:/var/lib/grafana 
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+    ports:
+      - "${GRAFANA_HOST_PORT:-127.0.0.1:3000}:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:

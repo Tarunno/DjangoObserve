@@ -1,0 +1,96 @@
+groups:
+  - name: infrastructure
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scrape target down ({{ $labels.job }})"
+          description: "{{ $labels.instance }} for job {{ $labels.job }} has been unreachable for more than 2 minutes."
+
+      - alert: PrometheusDiskAlmostFull
+        expr: (prometheus_tsdb_storage_blocks_bytes / (prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes + 1)) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus storage pressure"
+          description: "Prometheus local storage usage looks high. Check retention settings."
+
+  - name: django
+    rules:
+      - alert: DjangoHigh5xxRate
+        expr: |
+          sum(rate(django_http_responses_total_by_status_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(django_http_responses_total_by_status_total[5m])), 0.001)
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Django 5xx rate > 5%"
+          description: "More than 5% of Django responses are 5xx over the last 5 minutes."
+
+      - alert: DjangoHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(django_http_requests_latency_seconds_by_view_method_bucket[5m])) by (le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Django p95 latency > 2s"
+          description: "Django request latency p95 has exceeded 2 seconds for 10 minutes."
+
+  - name: postgres
+    rules:
+      - alert: PostgresExporterDown
+        expr: up{job="postgres"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "postgres_exporter is down"
+          description: "Prometheus cannot scrape postgres_exporter."
+
+      - alert: PostgresTooManyConnections
+        expr: |
+          sum(pg_stat_activity_count) by (instance)
+            /
+          sum(pg_settings_max_connections) by (instance)
+            > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connections > 80% of max"
+          description: "Connection usage is high on {{ $labels.instance }}."
+
+  - name: celery
+    rules:
+      - alert: CeleryExporterDown
+        expr: up{job="celery"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "celery-exporter is down"
+          description: "Prometheus cannot scrape celery-exporter. Check broker connectivity."
+
+      - alert: CeleryHighFailureRate
+        expr: |
+          sum(rate(celery_task_failed_total[10m]))
+            /
+          clamp_min(sum(rate(celery_task_received_total[10m])), 0.001)
+            > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Celery task failure rate > 10%"
+          description: "More than 10% of Celery tasks are failing."

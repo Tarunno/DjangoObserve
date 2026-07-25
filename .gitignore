@@ -1,3 +1,8 @@
+/.env
 /prometheus_data
 /grafana_data
+/alertmanager_data
 /.vscode
+__pycache__/
+*.pyc
+.DS_Store

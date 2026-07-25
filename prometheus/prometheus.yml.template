@@ -19,18 +19,19 @@ scrape_configs:
           - localhost:9090
 
   - job_name: django
-    metrics_path: /metrics
+    metrics_path: __DJANGO_METRICS_PATH__
     static_configs:
       - targets:
-          - host.docker.internal:8000
+          - __DJANGO_METRICS_TARGET__
         labels:
-          app: django
+          app: __DJANGO_APP_LABEL__
 
   - job_name: postgres
     static_configs:
       - targets:
           - postgres_exporter:9187
 
+  # Celery task metrics (Flower is UI-only; not scraped — basic auth would block /metrics).
   - job_name: celery
     static_configs:
       - targets:

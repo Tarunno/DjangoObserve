@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: django-monitoring
+    orgId: 1
+    folder: Django Monitoring
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
