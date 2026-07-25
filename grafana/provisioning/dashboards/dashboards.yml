@@ -1,9 +1,9 @@
 apiVersion: 1
 
 providers:
-  - name: django-monitoring
+  - name: django-observe
     orgId: 1
-    folder: Django Monitoring
+    folder: django-observe
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30

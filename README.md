@@ -1,5 +1,7 @@
-# Production monitoring stack for Django + PostgreSQL + Celery
-# Prometheus · Grafana · Alertmanager · exporters
+# DjangoObserve
+
+Production monitoring stack for Django + PostgreSQL + Celery  
+Prometheus · Grafana · Alertmanager · exporters
 
 Dashboards are provisioned automatically:
 

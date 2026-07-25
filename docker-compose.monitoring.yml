@@ -1,4 +1,4 @@
-# Production-oriented monitoring stack for Django + PostgreSQL + Celery.
+# django-observe — production monitoring for Django + PostgreSQL + Celery.
 # Usage:
 #   cp .env.example .env   # then edit secrets / targets
 #   docker-compose -f docker-compose.monitoring.yml up -d
