@@ -66,6 +66,9 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     environment:
       GOMEMLIMIT: 400MiB
+      OPENSEARCH_ENDPOINT: ${OPENSEARCH_ENDPOINT:-https://djangoobserve-hot:9200}
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-admin}
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     networks:

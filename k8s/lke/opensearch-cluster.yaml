@@ -1,0 +1,118 @@
+# OpenSearch on LKE: 3 dedicated masters, 3 hot (ingest + recent data), 3 medium (older data).
+# Label each LKE worker pool with djangoobserve.io/pool=master|hot|medium before applying.
+# Optional: taint pools with djangoobserve.io/pool=<role>:NoSchedule so only these pods land there.
+apiVersion: opensearch.opster.io/v1
+kind: OpenSearchCluster
+metadata:
+  name: djangoobserve
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: djangoobserve
+spec:
+  general:
+    httpPort: 9200
+    serviceName: djangoobserve
+    version: "2.19.1"
+    setVMMaxMapCount: true
+    drainDataNodes: true
+    additionalConfig:
+      cluster.routing.allocation.awareness.attributes: temp
+  security:
+    config:
+      adminCredentialsSecret:
+        name: djangoobserve-admin-credentials
+    tls:
+      http:
+        generate: true
+      transport:
+        generate: true
+        perNode: true
+  dashboards:
+    enable: true
+    version: "2.19.1"
+    replicas: 1
+    nodeSelector:
+      djangoobserve.io/pool: medium
+    tolerations:
+      - key: djangoobserve.io/pool
+        operator: Equal
+        value: medium
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: "200m"
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    tls:
+      enable: true
+      generate: true
+  nodePools:
+    - component: master
+      replicas: 3
+      diskSize: 20Gi
+      jvm: -Xms2g -Xmx2g
+      roles:
+        - cluster_manager
+      nodeSelector:
+        djangoobserve.io/pool: master
+      tolerations:
+        - key: djangoobserve.io/pool
+          operator: Equal
+          value: master
+          effect: NoSchedule
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+
+    - component: hot
+      replicas: 3
+      diskSize: 100Gi
+      jvm: -Xms4g -Xmx4g
+      roles:
+        - data
+        - ingest
+      additionalConfig:
+        node.attr.temp: hot
+      nodeSelector:
+        djangoobserve.io/pool: hot
+      tolerations:
+        - key: djangoobserve.io/pool
+          operator: Equal
+          value: hot
+          effect: NoSchedule
+      resources:
+        requests:
+          cpu: "2"
+          memory: 8Gi
+        limits:
+          cpu: "4"
+          memory: 8Gi
+
+    - component: medium
+      replicas: 3
+      diskSize: 250Gi
+      jvm: -Xms4g -Xmx4g
+      roles:
+        - data
+      additionalConfig:
+        node.attr.temp: medium
+      nodeSelector:
+        djangoobserve.io/pool: medium
+      tolerations:
+        - key: djangoobserve.io/pool
+          operator: Equal
+          value: medium
+          effect: NoSchedule
+      resources:
+        requests:
+          cpu: "1"
+          memory: 8Gi
+        limits:
+          cpu: "2"
+          memory: 8Gi

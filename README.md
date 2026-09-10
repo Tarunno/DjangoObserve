@@ -1,7 +1,7 @@
 # DjangoObserve
 
 Production monitoring stack for Django + PostgreSQL + Celery  
-Prometheus · Grafana · Alertmanager · OpenTelemetry Collector · exporters
+Prometheus · Grafana · Alertmanager · OpenTelemetry Collector · OpenSearch on LKE · exporters
 
 Dashboards are provisioned automatically:
 
@@ -82,7 +82,7 @@ DJANGO_METRICS_TARGET=web:8000
 
 ## Wire up OpenTelemetry
 
-The collector accepts OTLP traces, metrics, and logs. Until Tempo/Loki are added, telemetry is written to the collector logs (`debug` exporter) so you can confirm the pipeline.
+The collector accepts OTLP traces, metrics, and logs. Traces and logs are exported to **OpenSearch hot nodes** on LKE. Metrics stay on Prometheus (`django-prometheus` / exporters) so existing Grafana dashboards and alerts keep working.
 
 1. Install the SDK and instrumentations in your Django app:
 
@@ -107,15 +107,88 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 # export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 ```
 
-Keep `django-prometheus` for Grafana dashboards and alerts. Do not send the same RED metrics through OTLP yet — that would duplicate series.
-
-3. Confirm spans arrive:
+3. Set the OpenSearch hot endpoint in `.env` (see [OpenSearch on LKE](#opensearch-on-lke)). Confirm spans arrive:
 
 ```bash
 docker-compose -f docker-compose.monitoring.yml logs -f otel-collector
 ```
 
 OTLP has no authentication. Leave the ports on `127.0.0.1` or put the collector behind a mesh/proxy that enforces TLS and auth.
+
+## OpenSearch on LKE
+
+Use LKE with an HA control plane (3 replicas). That is separate from these **worker** pools:
+
+| Pool | Nodes | OpenSearch roles | What lands here |
+|------|-------|------------------|-----------------|
+| master | 3 | `cluster_manager` only | Cluster state — no ingest, no data |
+| hot | 3 | `data` + `ingest` | New traces/logs (`node.attr.temp=hot`) |
+| medium | 3 | `data` | Indices older than 7 days |
+
+The collector writes only to the **hot** service (`djangoobserve-hot`). Masters are never ingest targets.
+
+Suggested Linode pool sizes (leave headroom for kubelet):
+
+- master: 8 GB RAM (`g6-standard-4`)
+- hot: 16 GB RAM (`g6-standard-6`), SSD
+- medium: 16 GB RAM, larger disks
+
+1. Create the three LKE node pools and label every node:
+
+```bash
+kubectl label node <master-nodes>  djangoobserve.io/pool=master
+kubectl label node <hot-nodes>     djangoobserve.io/pool=hot
+kubectl label node <medium-nodes>  djangoobserve.io/pool=medium
+```
+
+Optional taint so only OpenSearch / collector pods schedule there:
+
+```text
+djangoobserve.io/pool=<master|hot|medium>:NoSchedule
+```
+
+2. Create admin credentials, install the OpenSearch operator, then apply this repo's manifests:
+
+```bash
+kubectl create namespace observability
+kubectl create secret generic djangoobserve-admin-credentials \
+  -n observability \
+  --from-literal=username=admin \
+  --from-literal=password='choose-a-strong-password'
+
+helm repo add opensearch-operator https://opensearch-project.github.io/opensearch-k8s-operator/
+helm install opensearch-operator opensearch-operator/opensearch-operator \
+  -n opensearch-operator --create-namespace
+
+kubectl apply -k k8s/lke
+```
+
+Wait until the cluster is green and `djangoobserve-admin-credentials` is present before expecting collector pods to export.
+
+3. After the cluster is green, apply the hot→medium ISM policy and index template (new writes stay on hot, then move to medium at 7 days):
+
+```bash
+# Use admin credentials from secret djangoobserve-admin-credentials
+curl -k -u admin:"$OPENSEARCH_PASSWORD" \
+  -H "Content-Type: application/json" \
+  -X PUT "https://<hot-or-dashboards-host>/_plugins/_ism/policies/otel-hot-medium" \
+  --data @k8s/lke/ism-hot-medium.json
+
+curl -k -u admin:"$OPENSEARCH_PASSWORD" \
+  -H "Content-Type: application/json" \
+  -X PUT "https://<hot-or-dashboards-host>/_index_template/ss4o-otel" \
+  --data @k8s/lke/index-template.json
+```
+
+4. Point Compose (or any off-cluster collector) at the hot pool:
+
+```bash
+OPENSEARCH_ENDPOINT=https://<hot-loadbalancer>:9200
+OPENSEARCH_USERNAME=admin
+OPENSEARCH_PASSWORD=...
+```
+
+In-cluster, `k8s/lke/otel-collector.yaml` already targets `https://djangoobserve-hot.observability.svc.cluster.local:9200` and publishes OTLP on a LoadBalancer (`4317`/`4318`).
 
 ## Postgres exporter
 
@@ -173,6 +246,8 @@ docker-compose -f docker-compose.monitoring.yml up -d alertmanager
 
 - Secrets live in `.env` (gitignored). Never commit real passwords.
 - UIs and OTLP receivers bind to `127.0.0.1` by default — put Grafana behind Nginx/Traefik/Caddy with TLS and real auth (OAuth/LDAP) for public access. Do not publish `4317`/`4318` on a public interface.
+- OpenSearch ingest must go to hot nodes only. Do not send OTLP or bulk index traffic to master nodes.
+- The collector skips OpenSearch TLS verify (`insecure_skip_verify`) so operator-generated certs work; pin the cluster CA in production.
 - Prometheus retention defaults to `15d` / `10GB` (override in `.env`).
 - Dashboards and the Prometheus datasource are provisioned from `grafana/`; rebuilds stay reproducible.
 - Prefer `sslmode=require` (or stronger) for Postgres when not on a private network.

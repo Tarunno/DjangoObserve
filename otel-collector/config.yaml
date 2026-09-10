@@ -1,11 +1,14 @@
-# Receives OTLP from Django / Celery. Traces, metrics, and logs are accepted
-# now; without Tempo/Loki they go to the debug exporter (collector stdout).
-# Swap debug for otlp/tempo (and Loki) when those backends are added.
+# Receives OTLP from Django / Celery and writes traces + logs to OpenSearch hot nodes.
+# Metrics stay on Prometheus (django-prometheus / exporters). Debug exporter is a local sanity check.
 
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
     path: /health
+  basicauth/opensearch:
+    client_auth:
+      username: ${env:OPENSEARCH_USERNAME}
+      password: ${env:OPENSEARCH_PASSWORD}
 
 receivers:
   otlp:
@@ -27,14 +30,26 @@ processors:
 exporters:
   debug:
     verbosity: basic
-  # Uncomment when Tempo is on the monitoring network:
-  # otlp/tempo:
-  #   endpoint: tempo:4317
-  #   tls:
-  #     insecure: true
+  opensearch:
+    http:
+      endpoint: ${env:OPENSEARCH_ENDPOINT}
+      auth:
+        authenticator: basicauth/opensearch
+      tls:
+        insecure_skip_verify: true
+      timeout: 30s
+    dataset: djangoobserve
+    namespace: default
+    mapping:
+      mode: ss4o
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
 
 service:
-  extensions: [health_check]
+  extensions: [health_check, basicauth/opensearch]
   telemetry:
     metrics:
       readers:
@@ -49,7 +64,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [debug, opensearch]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
@@ -57,4 +72,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [debug, opensearch]

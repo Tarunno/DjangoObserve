@@ -1,0 +1,58 @@
+{
+  "policy": {
+    "description": "Keep new OTel indices on hot nodes, then move them to medium.",
+    "default_state": "hot",
+    "ism_template": [
+      {
+        "index_patterns": ["ss4o_*"],
+        "priority": 100
+      }
+    ],
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {
+            "rollover": {
+              "min_index_age": "1d",
+              "min_size": "20gb",
+              "min_doc_count": 20000000
+            }
+          },
+          {
+            "allocation": {
+              "require": {
+                "temp": "hot"
+              }
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "state_name": "medium",
+            "conditions": {
+              "min_index_age": "7d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "medium",
+        "actions": [
+          {
+            "allocation": {
+              "require": {
+                "temp": "medium"
+              }
+            }
+          },
+          {
+            "replica_count": {
+              "number_of_replicas": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
