@@ -36,3 +36,8 @@ scrape_configs:
     static_configs:
       - targets:
           - celery_exporter:9808
+
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - otel-collector:8888

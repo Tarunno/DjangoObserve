@@ -1,7 +1,7 @@
 # DjangoObserve
 
 Production monitoring stack for Django + PostgreSQL + Celery  
-Prometheus · Grafana · Alertmanager · exporters
+Prometheus · Grafana · Alertmanager · OpenTelemetry Collector · exporters
 
 Dashboards are provisioned automatically:
 
@@ -25,9 +25,11 @@ docker-compose -f docker-compose.monitoring.yml up -d
 | Grafana | http://127.0.0.1:3000 |
 | Prometheus | http://127.0.0.1:9090 |
 | Alertmanager | http://127.0.0.1:9093 |
+| OTLP gRPC | `127.0.0.1:4317` |
+| OTLP HTTP | `127.0.0.1:4318` |
 | Flower | not published — attach to the network or publish behind a reverse proxy |
 
-Exporter ports (`9187`, `9808`) stay on the private `monitoring` network only.
+Exporter ports (`9187`, `9808`) and collector internals (`8888`, `13133`) stay on the private `monitoring` network only.
 
 ## Architecture
 
@@ -77,6 +79,43 @@ DJANGO_METRICS_TARGET=web:8000
 ```
 
 3. Restrict `/metrics` in production (firewall, allowlist Prometheus IPs, or auth). Do not expose it publicly.
+
+## Wire up OpenTelemetry
+
+The collector accepts OTLP traces, metrics, and logs. Until Tempo/Loki are added, telemetry is written to the collector logs (`debug` exporter) so you can confirm the pipeline.
+
+1. Install the SDK and instrumentations in your Django app:
+
+```bash
+pip install opentelemetry-sdk opentelemetry-exporter-otlp \
+  opentelemetry-instrumentation-django \
+  opentelemetry-instrumentation-psycopg \
+  opentelemetry-instrumentation-celery \
+  opentelemetry-instrumentation-redis
+```
+
+2. Point the app at the collector:
+
+```bash
+# Django on the host, monitoring in Docker:
+export OTEL_SERVICE_NAME=django
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+
+# Django as another Compose service on a shared network:
+# export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+# export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+```
+
+Keep `django-prometheus` for Grafana dashboards and alerts. Do not send the same RED metrics through OTLP yet — that would duplicate series.
+
+3. Confirm spans arrive:
+
+```bash
+docker-compose -f docker-compose.monitoring.yml logs -f otel-collector
+```
+
+OTLP has no authentication. Leave the ports on `127.0.0.1` or put the collector behind a mesh/proxy that enforces TLS and auth.
 
 ## Postgres exporter
 
@@ -133,7 +172,7 @@ docker-compose -f docker-compose.monitoring.yml up -d alertmanager
 ## Production notes
 
 - Secrets live in `.env` (gitignored). Never commit real passwords.
-- UIs bind to `127.0.0.1` by default — put Grafana behind Nginx/Traefik/Caddy with TLS and real auth (OAuth/LDAP) for public access.
+- UIs and OTLP receivers bind to `127.0.0.1` by default — put Grafana behind Nginx/Traefik/Caddy with TLS and real auth (OAuth/LDAP) for public access. Do not publish `4317`/`4318` on a public interface.
 - Prometheus retention defaults to `15d` / `10GB` (override in `.env`).
 - Dashboards and the Prometheus datasource are provisioned from `grafana/`; rebuilds stay reproducible.
 - Prefer `sslmode=require` (or stronger) for Postgres when not on a private network.
@@ -153,5 +192,6 @@ Then start the stack again.
 ```bash
 docker-compose -f docker-compose.monitoring.yml ps
 docker-compose -f docker-compose.monitoring.yml logs -f prometheus
+docker-compose -f docker-compose.monitoring.yml logs -f otel-collector
 docker-compose -f docker-compose.monitoring.yml down
 ```
